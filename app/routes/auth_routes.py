@@ -1,47 +1,75 @@
-from flask import Blueprint, request
-from app.models import db, User
-from flask_jwt_extended import create_access_token
-from datetime import timedelta
+from flask import Blueprint, request, jsonify
+from flask_jwt_extended import (
+    create_access_token,
+    jwt_required,
+    get_jwt_identity,
+)
+from app import db
+from app.models import User
 
 auth_bp = Blueprint("auth", __name__)
 
+
+# ── Sign Up ────────────────────────────────────────────────────────────────────
 @auth_bp.route("/signup", methods=["POST"])
 def signup():
-    data = request.json
+    data = request.get_json()
 
-    if User.query.filter_by(username=data["username"]).first():
-        return {"error": "Username exists"}, 400
+    if not data:
+        return jsonify({"error": "No data provided"}), 400
 
-    user = User(username=data["username"])
-    user.set_password(data["password"])
+    username = data.get("username", "").strip()
+    email = data.get("email", "").strip()
+    password = data.get("password", "")
+
+    if not username or not email or not password:
+        return jsonify({"error": "username, email, and password are required"}), 422
+
+    # Enforce unique username and email
+    if User.query.filter_by(username=username).first():
+        return jsonify({"error": "Username already taken"}), 422
+
+    if User.query.filter_by(email=email).first():
+        return jsonify({"error": "Email already registered"}), 422
+
+    user = User(username=username, email=email)
+    user.set_password(password)
 
     db.session.add(user)
     db.session.commit()
 
-    return {"message": "User created"}, 201
+    token = create_access_token(identity=str(user.id))
+    return jsonify({"user": user.to_dict(), "access_token": token}), 201
 
 
+# ── Login ──────────────────────────────────────────────────────────────────────
 @auth_bp.route("/login", methods=["POST"])
 def login():
-    data = request.json
-    user = User.query.filter_by(username=data["username"]).first()
+    data = request.get_json()
 
-    if not user or not user.check_password(data["password"]):
-        return {"error": "Invalid credentials"}, 401
+    if not data:
+        return jsonify({"error": "No data provided"}), 400
 
-    token = create_access_token(identity=user.id, expires_delta=timedelta(days=1))
+    username = data.get("username", "").strip()
+    password = data.get("password", "")
 
-    return {"access_token": token}, 200
+    user = User.query.filter_by(username=username).first()
+
+    if not user or not user.check_password(password):
+        return jsonify({"error": "Invalid username or password"}), 401
+
+    token = create_access_token(identity=str(user.id))
+    return jsonify({"user": user.to_dict(), "access_token": token}), 200
 
 
+# ── Me (Check Session) ─────────────────────────────────────────────────────────
 @auth_bp.route("/me", methods=["GET"])
+@jwt_required()
 def me():
-    from flask_jwt_extended import get_jwt_identity, jwt_required
+    user_id = int(get_jwt_identity())
+    user = User.query.get(user_id)
 
-    @jwt_required()
-    def inner():
-        user_id = get_jwt_identity()
-        user = User.query.get(user_id)
-        return {"id": user.id, "username": user.username}
+    if not user:
+        return jsonify({"error": "User not found"}), 404
 
-    return inner()
+    return jsonify(user.to_dict()), 200
